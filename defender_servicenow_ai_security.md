@@ -913,3 +913,94 @@ Before production use, replace placeholders/connectors:
 - Human-review/remediation automation endpoints.
 - ServiceNow close `SYS_ID_PLACEHOLDER` lookup logic (use correlation_id-based lookup).
 - Add strict policy-engine action between AI decision and ServiceNow state change.
+
+
+## 19) Requirements to Deploy the Logic App
+
+Use this checklist before deploying `logicapp_defender_servicenow_template.json`.
+
+### 19.1 Azure Prerequisites
+
+- Active Azure subscription with permission to deploy `Microsoft.Logic/workflows`.
+- Resource group for deployment (for example `rg-secops-automation`).
+- Logic App enabled in target region.
+- Microsoft Defender for Cloud data available in subscriptions you query.
+
+### 19.2 Identity and RBAC Requirements
+
+- Enable **System-assigned Managed Identity** on the Logic App (or switch template to user-assigned identity).
+- Grant identity access to run Resource Graph queries:
+  - Reader (minimum) on target subscriptions/management groups.
+  - Permission to query `Microsoft.ResourceGraph/resources`.
+- If using Key Vault for secrets, grant identity:
+  - `Key Vault Secrets User` (read secrets only).
+
+### 19.3 Required External Integrations
+
+- **Azure OpenAI** resource and model deployment (deployment name required).
+- **ServiceNow** instance with API access and integration user.
+- **Teams connector** (if using “ask which feed is needed” interactive step).
+- Optional remediation/human-review webhook endpoints.
+
+### 19.4 Network and Security Requirements
+
+- Outbound connectivity from Logic App to:
+  - `management.azure.com` (ARG)
+  - `<your-openai-resource>.openai.azure.com` (Azure OpenAI)
+  - `<your-instance>.service-now.com` (ServiceNow)
+- Store API keys/passwords in Key Vault; avoid hardcoding secrets in parameters files.
+- Enable diagnostic logs for Logic App runs and failed actions.
+
+### 19.5 Template Inputs Required
+
+Provide values for these parameters:
+
+- `logicAppName`
+- `location`
+- `subscriptionId`
+- `resourceGroupName`
+- `tenantId`
+- `azureOpenAiEndpoint`
+- `azureOpenAiApiKey` (or Key Vault reference)
+- `azureOpenAiDeployment`
+- `serviceNowInstance`
+- `serviceNowUser`
+- `serviceNowPassword` (or Key Vault reference)
+- `feedSelectionDefault` (`ask` / `recommendations` / `vulnerabilities` / `both`)
+
+Sample parameter file provided:
+
+- `logicapp_defender_servicenow_template.parameters.sample.json`
+
+### 19.6 Connector/Placeholder Items to Update
+
+Before production deployment, replace/complete:
+
+- `$connections` references for Teams connector in workflow definition.
+- `SYS_ID_PLACEHOLDER` close-ticket path with real incident lookup by `correlation_id`.
+- `https://example-automation-endpoint/remediate` endpoint.
+- `https://example-automation-endpoint/human-review` endpoint.
+
+### 19.7 Deployment Commands (Azure CLI)
+
+```bash
+# 1) Set context
+az account set --subscription <subscription-id>
+
+# 2) Validate ARM template
+az deployment group validate   --resource-group <resource-group>   --template-file logicapp_defender_servicenow_template.json   --parameters @logicapp_defender_servicenow_template.parameters.sample.json
+
+# 3) Deploy
+az deployment group create   --resource-group <resource-group>   --template-file logicapp_defender_servicenow_template.json   --parameters @logicapp_defender_servicenow_template.parameters.sample.json
+```
+
+### 19.8 Post-Deployment Validation
+
+- Confirm recurrence trigger is enabled and firing.
+- Run a test execution with `feedSelectionDefault=ask` and verify feed prompt behavior.
+- Verify ARG response payload shape for selected feed.
+- Verify Azure OpenAI returns schema-valid decision JSON.
+- Verify ServiceNow incident create/update/close API calls succeed.
+- Verify failures route to human-review path and logs are captured.
+
+This deployment checklist covers what is required to run the Logic App reliably in production.
