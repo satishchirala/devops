@@ -890,3 +890,26 @@ After ticket creation:
 4. Re-validate via OpenAI for remediation quality and eventual closure eligibility.
 
 This guarantees OpenAI validation is directly connected to deterministic ServiceNow ticket creation and lifecycle tracking.
+
+
+## 18) Deployable Logic App Template (Asking Which Feed Is Needed)
+
+A starter deployment template is provided in:
+
+- `logicapp_defender_servicenow_template.json`
+
+What this template includes:
+
+- Recurrence trigger.
+- Interactive **"Which feed is needed?"** step (`recommendations` / `vulnerabilities` / `both`).
+- ARG query branching by selected feed.
+- Azure OpenAI validation step.
+- Decision branching (`create` / `remediate` / `close` / human review).
+- ServiceNow create/close integration and automation hooks.
+
+Before production use, replace placeholders/connectors:
+
+- Teams connection reference (`$connections`) for the ask-feed step.
+- Human-review/remediation automation endpoints.
+- ServiceNow close `SYS_ID_PLACEHOLDER` lookup logic (use correlation_id-based lookup).
+- Add strict policy-engine action between AI decision and ServiceNow state change.
