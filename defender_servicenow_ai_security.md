@@ -607,3 +607,132 @@ Store reviewer identity and approval timestamp on the ServiceNow record.
 8. Emit telemetry and KPI dashboard updates.
 
 This pattern gives a governed, observable AI-activity backbone for Defender-to-ServiceNow operations.
+
+
+## 15) Functionality Blueprint
+
+This blueprint defines the production functionality as modular capabilities with clear inputs, outputs, and ownership.
+
+### 15.1 Reference Architecture Blueprint
+
+```text
++---------------------------+
+| Microsoft Defender Cloud  |
+| Recommendations/Vulns     |
++------------+--------------+
+             |
+             v
++---------------------------+
+| Azure Resource Graph      |
+| (scheduled queries)       |
++------------+--------------+
+             |
+             v
++---------------------------+
+| Normalization & Enrichment|
+| - tags (owner/env)        |
+| - resource criticality    |
+| - dedup key generation    |
++------------+--------------+
+             |
+             v
++---------------------------+      +----------------------------+
+| AI Activity Orchestrator  |----->| Azure AI Foundry Activities|
+| (Logic App/Function)      |      | open/remediate/close       |
++------------+--------------+      +-------------+--------------+
+             |                                   |
+             |                                   v
+             |                        +--------------------------+
+             +----------------------->| Policy Engine            |
+                                      | deterministic guardrails |
+                                      +-------------+------------+
+                                                    |
+                                          approved? |
+                                                    v
+                                      +--------------------------+
+                                      | ServiceNow Integration   |
+                                      | create/update/close      |
+                                      +-------------+------------+
+                                                    |
+                                                    v
+                                      +--------------------------+
+                                      | Telemetry + Audit Store  |
+                                      | logs, metrics, evidence  |
+                                      +--------------------------+
+```
+
+### 15.2 Functional Modules
+
+1. **Discovery Module**
+   - Runs ARG queries for assessments/subassessments.
+   - Output: raw finding stream.
+
+2. **Context Enrichment Module**
+   - Adds `service_owner`, `business_owner`, `environmentClass`, `resourceCriticality`, exposure and sensitivity tags.
+   - Output: normalized finding contract.
+
+3. **Prioritization Module**
+   - Computes score using severity + resource weights + overrides.
+   - Output: recommended priority (`P1`-`P4`) and SLA target.
+
+4. **AI Validation Module**
+   - Calls Foundry activities for open/remediation/closure decisions.
+   - Output: schema-valid decision object with confidence and reason code.
+
+5. **Policy Control Module**
+   - Applies non-negotiable rules (no unsafe suppression/closure).
+   - Output: allow/deny decision with policy reason.
+
+6. **ServiceNow Action Module**
+   - Performs idempotent create/update/close using `correlation_id`.
+   - Output: ticket state + record linkage.
+
+7. **Audit & KPI Module**
+   - Stores prompts hashes, decisions, policy outcomes, and lifecycle metrics.
+   - Output: compliance evidence + dashboards.
+
+### 15.3 End-to-End Blueprint Flow
+
+```text
+Step 1  Pull Defender findings from ARG
+Step 2  Enrich with resource + owner + environment metadata
+Step 3  Generate correlation_id and check existing ServiceNow ticket
+Step 4  Compute base risk and suggested priority
+Step 5  Execute AI Foundry activity (open/remediate/close)
+Step 6  Validate JSON schema and confidence thresholds
+Step 7  Apply deterministic policy guardrails
+Step 8  Create/update/close ticket in ServiceNow (or route to human queue)
+Step 9  Persist telemetry, audit evidence, and KPI counters
+```
+
+### 15.4 Blueprint Decision Table
+
+| Condition | Action | Ticket Outcome |
+|---|---|---|
+| Critical + prd + tier0/tier1 | Force open, human approval required | P1 ticket created/updated |
+| High + internet exposed + prd | Open (no suppression unless approved exception) | P1/P2 |
+| Medium + dev + tier3 + non-exposed | AI/policy may suppress | No ticket or P3/P4 |
+| Closure candidate but missing evidence | Block closure | Keep open / human review |
+| Closure candidate + evidence + policy pass | Allow closure | Resolved/Closed |
+
+### 15.5 Implementation Blueprint Checklist
+
+- [ ] ARG queries scheduled and scoped correctly.
+- [ ] Normalization schema includes owner/environment/criticality.
+- [ ] Resource-based matrix and overrides implemented.
+- [ ] AI Foundry activities deployed and schema-validated.
+- [ ] Policy engine blocks unsafe open/suppress/close transitions.
+- [ ] ServiceNow upsert uses deterministic `correlation_id`.
+- [ ] Audit logs and KPI dashboards are operational.
+- [ ] Human-in-the-loop queue is configured for ambiguous/high-risk cases.
+
+### 15.6 Blueprint Deliverables (Build Artifacts)
+
+- Workflow definition (Logic App / Function orchestration).
+- ARG query package and normalization mapping config.
+- Foundry activity definitions + prompt versions.
+- Policy rule pack (severity/resource/environment constraints).
+- ServiceNow mapping config + transform rules.
+- Operational dashboard for SLA, reopen rate, suppression precision.
+
+This blueprint can be used directly as the implementation baseline for development and phased rollout.
