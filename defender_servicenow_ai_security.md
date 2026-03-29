@@ -482,7 +482,8 @@ Before closure, enforce stricter criteria for critical resources:
 
 During normalization, extract resource metadata and tags:
 
-- `resourceType = tostring(type)` from related resource context.
+- `resourceId = tostring(properties.resourceDetails.id)` from the `securityresources` record.
+- `resourceType = tolower(coalesce(tostring(resource.type), extract('(?i)/providers/([^/]+/[^/]+(?:/[^/]+/[^/]+)*)', 1, resourceId)))` by joining `resources` on `resourceId` (fallback to parsing `resourceId` if join misses).
 - `serviceOwner = tostring(tags.service_owner)`.
 - `environmentClass = normalize(tags.environment)`.
 - `resourceCriticality = tostring(tags.criticality)`.
