@@ -812,3 +812,81 @@ For each finding:
 - `evidence_links`
 
 This model gives a direct, implementable Logic App design aligned with AI governance and resource-based ticketing.
+
+
+## 17) OpenAI Validation -> Mandatory ServiceNow Ticket Creation Flow
+
+To enforce consistent operations: **OpenAI validates first; if decision is `create` and policy passes, ServiceNow ticket creation is mandatory**.
+
+### 17.1 Enforcement Rule
+
+- Run OpenAI validation for every eligible finding.
+- If OpenAI returns `decision=create` with valid schema and confidence above threshold, then create/update ServiceNow ticket.
+- If OpenAI returns uncertain or schema-invalid output, route to human review (do not auto-close).
+- Policy engine can only tighten controls (for example force human approval), not skip required ticket creation for high-risk findings.
+
+### 17.2 Decision Contract (Create Path)
+
+Required OpenAI output fields:
+
+- `decision` = `create` | `remediate` | `close` | `needs_human_review`
+- `confidence` (0-100)
+- `reason_code`
+- `recommended_priority`
+- `requires_human_approval`
+
+Create-path gate:
+
+- `decision == create`
+- `confidence >= configured_threshold`
+- `schema_validation_status == pass`
+- `policy_decision == allow`
+
+When all gates pass, ServiceNow create/upsert action must execute.
+
+### 17.3 Logic App Create Branch (Reference)
+
+```text
+Recurrence Trigger
+  -> ARG Query
+  -> OpenAI Validation
+  -> Validate Schema
+  -> Policy Engine Check
+      if ai.decision == "create" and schema_pass and policy_allow:
+          ServiceNow Create/Upsert Ticket
+          Trigger remediation automation
+      else:
+          Route to human review queue
+```
+
+### 17.4 ServiceNow Create Payload (Minimum)
+
+```json
+{
+  "correlation_id": "<deterministic_key>",
+  "short_description": "[Defender][High] Vulnerability detected on critical resource",
+  "description": "OpenAI validated finding and policy approved automatic ticket creation.",
+  "u_finding_id": "<finding_id>",
+  "u_resource_id": "<resource_id>",
+  "u_resource_type": "<resource_type>",
+  "u_resource_criticality": "tier1",
+  "u_environment_class": "prd",
+  "u_service_owner": "app-team",
+  "u_ai_decision": "create",
+  "u_ai_confidence": 92,
+  "u_ai_reason_code": "active_exposure",
+  "u_policy_decision": "allow",
+  "priority": "1"
+}
+```
+
+### 17.5 Create-Then-Track Lifecycle
+
+After ticket creation:
+
+1. Assign to owner group from `u_service_owner`.
+2. Start SLA timer from environment/criticality matrix.
+3. Run remediation automation and post updates to work notes.
+4. Re-validate via OpenAI for remediation quality and eventual closure eligibility.
+
+This guarantees OpenAI validation is directly connected to deterministic ServiceNow ticket creation and lifecycle tracking.
