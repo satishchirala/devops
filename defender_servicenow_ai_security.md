@@ -736,3 +736,79 @@ Step 9  Persist telemetry, audit evidence, and KPI counters
 - Operational dashboard for SLA, reopen rate, suppression precision.
 
 This blueprint can be used directly as the implementation baseline for development and phased rollout.
+
+
+## 16) Logic App Model Flow (Recurrence -> ARG -> Azure OpenAI -> Decision -> ITSM)
+
+Use this baseline flow in Logic App for automated security activity handling:
+
+```text
+Logic App (Recurrence Trigger)
+       ↓
+Run ARG Query (Fetch vulnerabilities)
+       ↓
+Send to AI (Azure OpenAI)
+       ↓
+Decision (Create / Remediate / Close)
+       ↓
+ITSM Ticket + Automation
+```
+
+### 16.1 Step-by-Step Implementation
+
+1. **Logic App (Recurrence Trigger)**
+   - Run every 1-4 hours.
+   - Optional split by subscription/management group for scale.
+
+2. **Run ARG Query (Fetch vulnerabilities)**
+   - Execute `securityresources` queries for recommendations and subassessments.
+   - Normalize payload with resource context (`resourceType`, `resourceCriticality`, `environmentClass`, `serviceOwner`).
+
+3. **Send to AI (Azure OpenAI)**
+   - Send normalized finding batch (or per-finding payload) to Azure OpenAI.
+   - Require structured JSON output with action + confidence + reason code.
+   - Validate schema before any downstream action.
+
+4. **Decision (Create / Remediate / Close)**
+   - `Create`: open/update ticket if risk/policy threshold met.
+   - `Remediate`: update remediation task state and owner action requirements.
+   - `Close`: resolve only when scan absence + evidence + policy checks pass.
+   - If uncertain/invalid, route to human triage.
+
+5. **ITSM Ticket + Automation**
+   - Upsert ServiceNow record via `correlation_id`.
+   - Trigger automation playbooks (owner notifications, patch workflows, verification scans).
+   - Write telemetry and audit trail (AI output hash, policy decision, action result).
+
+### 16.2 Logic App Branching Blueprint
+
+```text
+For each finding:
+  if ai.decision == "create":
+     ServiceNow Upsert (Open/In Progress)
+     Trigger remediation automation
+  elif ai.decision == "remediate":
+     Update ticket tasks + notify owner
+     Trigger validation scan workflow
+  elif ai.decision == "close" and policy_pass == true:
+     Close ticket with evidence
+  else:
+     Route to human approval queue
+```
+
+### 16.3 Minimum Action Payload to ITSM
+
+- `correlation_id`
+- `finding_id`
+- `resource_id`
+- `resource_type`
+- `resource_criticality`
+- `environment_class`
+- `service_owner`
+- `ai_decision`
+- `ai_confidence`
+- `ai_reason_code`
+- `policy_decision`
+- `evidence_links`
+
+This model gives a direct, implementable Logic App design aligned with AI governance and resource-based ticketing.
