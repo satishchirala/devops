@@ -1,0 +1,301 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "logicAppName": { "type": "string", "defaultValue": "la-defender-servicenow-ai" },
+    "location": { "type": "string", "defaultValue": "eastus" },
+    "subscriptionId": { "type": "string" },
+    "resourceGroupName": { "type": "string" },
+    "tenantId": { "type": "string" },
+    "azureOpenAiEndpoint": { "type": "string" },
+    "azureOpenAiApiKey": { "type": "securestring" },
+    "azureOpenAiDeployment": { "type": "string" },
+    "serviceNowInstance": { "type": "string" },
+    "serviceNowUser": { "type": "string" },
+    "serviceNowPassword": { "type": "securestring" },
+    "feedSelectionDefault": {
+      "type": "string",
+      "defaultValue": "ask",
+      "allowedValues": ["ask", "recommendations", "vulnerabilities", "both"]
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('logicAppName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "subscriptionId": { "type": "String" },
+            "resourceGroupName": { "type": "String" },
+            "tenantId": { "type": "String" },
+            "azureOpenAiEndpoint": { "type": "String" },
+            "azureOpenAiApiKey": { "type": "SecureString" },
+            "azureOpenAiDeployment": { "type": "String" },
+            "serviceNowInstance": { "type": "String" },
+            "serviceNowUser": { "type": "String" },
+            "serviceNowPassword": { "type": "SecureString" },
+            "feedSelectionDefault": { "type": "String" }
+          },
+          "triggers": {
+            "Recurrence": {
+              "type": "Recurrence",
+              "recurrence": {
+                "frequency": "Hour",
+                "interval": 2
+              }
+            }
+          },
+          "actions": {
+            "Initialize_feed_selection": {
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "feedSelection",
+                    "type": "string",
+                    "value": "@{parameters('feedSelectionDefault')}"
+                  }
+                ]
+              },
+              "runAfter": {}
+            },
+            "Ask_which_feed_is_needed": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['teams']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/v1.0/teams/adaptivecards/waitforresponse",
+                "body": {
+                  "message": "Which feed is needed for this run?",
+                  "choices": ["recommendations", "vulnerabilities", "both"],
+                  "default": "@{variables('feedSelection')}"
+                }
+              },
+              "runAfter": {
+                "Initialize_feed_selection": ["Succeeded"]
+              }
+            },
+            "Set_feed_from_response": {
+              "type": "SetVariable",
+              "inputs": {
+                "name": "feedSelection",
+                "value": "@{coalesce(body('Ask_which_feed_is_needed')?['feed'], variables('feedSelection'))}"
+              },
+              "runAfter": {
+                "Ask_which_feed_is_needed": ["Succeeded", "TimedOut", "Failed"]
+              }
+            },
+            "Switch_feed": {
+              "type": "Switch",
+              "expression": "@variables('feedSelection')",
+              "cases": {
+                "recommendations": {
+                  "actions": {
+                    "Run_ARG_Recommendations": {
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01",
+                        "headers": { "Content-Type": "application/json" },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "audience": "https://management.azure.com/"
+                        },
+                        "body": {
+                          "subscriptions": ["@{parameters('subscriptionId') }"],
+                          "query": "securityresources | where type =~ 'microsoft.security/assessments' | where tostring(properties.status.code) == 'Unhealthy'"
+                        }
+                      }
+                    }
+                  }
+                },
+                "vulnerabilities": {
+                  "actions": {
+                    "Run_ARG_Vulnerabilities": {
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01",
+                        "headers": { "Content-Type": "application/json" },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "audience": "https://management.azure.com/"
+                        },
+                        "body": {
+                          "subscriptions": ["@{parameters('subscriptionId') }"],
+                          "query": "securityresources | where type =~ 'microsoft.security/assessments/subassessments' | where tostring(properties.status.code) == 'Unhealthy'"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "default": {
+                "actions": {
+                  "Run_ARG_Both": {
+                    "type": "Http",
+                    "inputs": {
+                      "method": "POST",
+                      "uri": "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01",
+                      "headers": { "Content-Type": "application/json" },
+                      "authentication": {
+                        "type": "ManagedServiceIdentity",
+                        "audience": "https://management.azure.com/"
+                      },
+                      "body": {
+                        "subscriptions": ["@{parameters('subscriptionId') }"],
+                        "query": "securityresources | where type has 'microsoft.security/assessments' | where tostring(properties.status.code) == 'Unhealthy'"
+                      }
+                    }
+                  }
+                }
+              },
+              "runAfter": {
+                "Set_feed_from_response": ["Succeeded"]
+              }
+            },
+            "Send_to_Azure_OpenAI_for_Validation": {
+              "type": "Http",
+              "inputs": {
+                "method": "POST",
+                "uri": "@{concat(parameters('azureOpenAiEndpoint'), '/openai/deployments/', parameters('azureOpenAiDeployment'), '/chat/completions?api-version=2024-10-21')}",
+                "headers": {
+                  "Content-Type": "application/json",
+                  "api-key": "@{parameters('azureOpenAiApiKey')}"
+                },
+                "body": {
+                  "messages": [
+                    {
+                      "role": "system",
+                      "content": "You validate security findings and return JSON only with decision=create|remediate|close|needs_human_review, confidence, reason_code."
+                    },
+                    {
+                      "role": "user",
+                      "content": "@{string(body('Switch_feed'))}"
+                    }
+                  ],
+                  "response_format": {
+                    "type": "json_object"
+                  },
+                  "temperature": 0
+                }
+              },
+              "runAfter": {
+                "Switch_feed": ["Succeeded"]
+              }
+            },
+            "Decision_Create_Remediate_Close": {
+              "type": "Switch",
+              "expression": "@{body('Send_to_Azure_OpenAI_for_Validation')?['decision']}",
+              "cases": {
+                "create": {
+                  "actions": {
+                    "ServiceNow_Create_or_Update": {
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "@{concat('https://', parameters('serviceNowInstance'), '.service-now.com/api/now/table/incident')}",
+                        "headers": { "Content-Type": "application/json" },
+                        "authentication": {
+                          "type": "Basic",
+                          "username": "@{parameters('serviceNowUser')}",
+                          "password": "@{parameters('serviceNowPassword')}"
+                        },
+                        "body": {
+                          "short_description": "[Defender] AI validated finding",
+                          "description": "Created from Logic App after Azure OpenAI validation",
+                          "u_ai_decision": "create",
+                          "u_ai_confidence": "@{body('Send_to_Azure_OpenAI_for_Validation')?['confidence']}",
+                          "u_feed_selection": "@{variables('feedSelection')}"
+                        }
+                      }
+                    }
+                  }
+                },
+                "remediate": {
+                  "actions": {
+                    "Trigger_Remediation_Automation": {
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "https://example-automation-endpoint/remediate",
+                        "headers": { "Content-Type": "application/json" },
+                        "body": {
+                          "decision": "remediate",
+                          "feed": "@{variables('feedSelection')}"
+                        }
+                      }
+                    }
+                  }
+                },
+                "close": {
+                  "actions": {
+                    "ServiceNow_Close_Ticket": {
+                      "type": "Http",
+                      "inputs": {
+                        "method": "PATCH",
+                        "uri": "@{concat('https://', parameters('serviceNowInstance'), '.service-now.com/api/now/table/incident/', 'SYS_ID_PLACEHOLDER')}",
+                        "headers": { "Content-Type": "application/json" },
+                        "authentication": {
+                          "type": "Basic",
+                          "username": "@{parameters('serviceNowUser')}",
+                          "password": "@{parameters('serviceNowPassword')}"
+                        },
+                        "body": {
+                          "state": "7",
+                          "close_notes": "Closed after Azure OpenAI + policy validation"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "default": {
+                "actions": {
+                  "Route_to_Human_Review": {
+                    "type": "Http",
+                    "inputs": {
+                      "method": "POST",
+                      "uri": "https://example-automation-endpoint/human-review",
+                      "headers": { "Content-Type": "application/json" },
+                      "body": {
+                        "reason": "AI output unclear or policy denied",
+                        "feed": "@{variables('feedSelection')}"
+                      }
+                    }
+                  }
+                }
+              },
+              "runAfter": {
+                "Send_to_Azure_OpenAI_for_Validation": ["Succeeded"]
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "subscriptionId": { "value": "[parameters('subscriptionId')]" },
+          "resourceGroupName": { "value": "[parameters('resourceGroupName')]" },
+          "tenantId": { "value": "[parameters('tenantId')]" },
+          "azureOpenAiEndpoint": { "value": "[parameters('azureOpenAiEndpoint')]" },
+          "azureOpenAiApiKey": { "value": "[parameters('azureOpenAiApiKey')]" },
+          "azureOpenAiDeployment": { "value": "[parameters('azureOpenAiDeployment')]" },
+          "serviceNowInstance": { "value": "[parameters('serviceNowInstance')]" },
+          "serviceNowUser": { "value": "[parameters('serviceNowUser')]" },
+          "serviceNowPassword": { "value": "[parameters('serviceNowPassword')]" },
+          "feedSelectionDefault": { "value": "[parameters('feedSelectionDefault')]" }
+        }
+      }
+    }
+  ]
+}
