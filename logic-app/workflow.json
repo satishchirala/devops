@@ -1,0 +1,249 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2019-05-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "subscriptionId": {
+      "type": "String",
+      "defaultValue": "<your-subscription-id>"
+    },
+    "socMailTo": {
+      "type": "String",
+      "defaultValue": "soc@example.com"
+    },
+    "serviceNowAssignmentGroup": {
+      "type": "String",
+      "defaultValue": "<soc-assignment-group-sys-id>"
+    },
+    "serviceNowCategory": {
+      "type": "String",
+      "defaultValue": "Security"
+    }
+  },
+  "triggers": {
+    "Monthly_First_Week": {
+      "type": "Recurrence",
+      "recurrence": {
+        "frequency": "Month",
+        "interval": 1,
+        "schedule": {
+          "monthDays": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "hours": [
+            8
+          ],
+          "minutes": [
+            0
+          ]
+        },
+        "timeZone": "UTC"
+      }
+    }
+  },
+  "actions": {
+    "List_Defender_Assessments": {
+      "type": "Http",
+      "inputs": {
+        "method": "GET",
+        "uri": "@{concat('https://management.azure.com/subscriptions/', parameters('subscriptionId'), '/providers/Microsoft.Security/assessments?api-version=2020-01-01')}",
+        "authentication": {
+          "type": "ManagedServiceIdentity",
+          "audience": "https://management.azure.com/"
+        }
+      },
+      "runAfter": {}
+    },
+    "Parse_Assessments": {
+      "type": "ParseJson",
+      "inputs": {
+        "content": "@body('List_Defender_Assessments')",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "properties": {
+                    "type": "object",
+                    "properties": {
+                      "displayName": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "object",
+                        "properties": {
+                          "severity": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "resourceDetails": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "tags": {
+                            "type": "object"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "properties"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "runAfter": {
+        "List_Defender_Assessments": [
+          "Succeeded"
+        ]
+      }
+    },
+    "Filter_High_Critical": {
+      "type": "Query",
+      "inputs": {
+        "from": "@body('Parse_Assessments')?['value']",
+        "where": "@or(equals(item()?['properties']?['status']?['severity'], 'High'), equals(item()?['properties']?['status']?['severity'], 'Critical'))"
+      },
+      "runAfter": {
+        "Parse_Assessments": [
+          "Succeeded"
+        ]
+      }
+    },
+    "Filter_OS_Level": {
+      "type": "Query",
+      "inputs": {
+        "from": "@body('Filter_High_Critical')",
+        "where": "@or(contains(toLower(item()?['properties']?['displayName']), 'os'), contains(toLower(item()?['properties']?['displayName']), 'operating system'), contains(toLower(item()?['properties']?['displayName']), 'kernel'))"
+      },
+      "runAfter": {
+        "Filter_High_Critical": [
+          "Succeeded"
+        ]
+      }
+    },
+    "Filter_Application_Level": {
+      "type": "Query",
+      "inputs": {
+        "from": "@body('Filter_High_Critical')",
+        "where": "@or(contains(toLower(item()?['properties']?['displayName']), 'application'), contains(toLower(item()?['properties']?['displayName']), 'software'), contains(toLower(item()?['properties']?['displayName']), 'package'), contains(toLower(item()?['properties']?['displayName']), 'library'))"
+      },
+      "runAfter": {
+        "Filter_High_Critical": [
+          "Succeeded"
+        ]
+      }
+    },
+    "Create_HTML_Table_OS": {
+      "type": "Table",
+      "inputs": {
+        "format": "HTML",
+        "from": "@body('Filter_OS_Level')"
+      },
+      "runAfter": {
+        "Filter_OS_Level": [
+          "Succeeded"
+        ]
+      }
+    },
+    "Create_HTML_Table_Application": {
+      "type": "Table",
+      "inputs": {
+        "format": "HTML",
+        "from": "@body('Filter_Application_Level')"
+      },
+      "runAfter": {
+        "Filter_Application_Level": [
+          "Succeeded"
+        ]
+      }
+    },
+    "Resolve_ServiceOwner_Email": {
+      "type": "Compose",
+      "inputs": "@{coalesce(first(body('Filter_High_Critical'))?['properties']?['resourceDetails']?['tags']?['ServiceOwnerEmail'], first(body('Filter_High_Critical'))?['properties']?['resourceDetails']?['tags']?['serviceOwnerEmail'], first(body('Filter_High_Critical'))?['properties']?['resourceDetails']?['tags']?['ServiceOwner'], parameters('socMailTo'))}",
+      "runAfter": {
+        "Create_HTML_Table_OS": [
+          "Succeeded"
+        ],
+        "Create_HTML_Table_Application": [
+          "Succeeded"
+        ]
+      }
+    },
+    "Send_SOC_Email": {
+      "type": "ApiConnection",
+      "inputs": {
+        "method": "post",
+        "path": "/v2/Mail",
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['office365']['connectionId']"
+          }
+        },
+        "body": {
+          "To": "@outputs('Resolve_ServiceOwner_Email')",
+          "Subject": "[SOC] Monthly Week-1 Vulnerability Report - @{utcNow()}",
+          "Body": "@{concat('<p>Monthly first-week vulnerability report generated at ', utcNow(), '.</p>', '<p><b>Service owner email (from tag):</b> ', outputs('Resolve_ServiceOwner_Email'), '</p>', '<p><b>Total High/Critical:</b> ', string(length(body('Filter_High_Critical'))), '</p>', '<p><b>OS-level findings:</b> ', string(length(body('Filter_OS_Level'))), '</p>', body('Create_HTML_Table_OS'), '<p><b>Application-level findings:</b> ', string(length(body('Filter_Application_Level'))), '</p>', body('Create_HTML_Table_Application'))}",
+          "Importance": "High"
+        }
+      },
+      "runAfter": {
+        "Resolve_ServiceOwner_Email": [
+          "Succeeded"
+        ]
+      }
+    },
+    "Create_ServiceNow_Incident": {
+      "type": "ApiConnection",
+      "inputs": {
+        "method": "post",
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['servicenow']['connectionId']"
+          }
+        },
+        "path": "/api/now/table/incident",
+        "body": {
+          "short_description": "Monthly Week-1 Azure vulnerability report (OS vs Application)",
+          "description": "@{concat('Generated: ', utcNow(), '\nTotal High/Critical: ', string(length(body('Filter_High_Critical'))), '\nOS-level: ', string(length(body('Filter_OS_Level'))), '\nApplication-level: ', string(length(body('Filter_Application_Level'))), '\nService owner email: ', outputs('Resolve_ServiceOwner_Email'), '\n\nThis ticket is auto-created from Azure Logic App for SOC triage.')}",
+          "category": "@parameters('serviceNowCategory')",
+          "assignment_group": "@parameters('serviceNowAssignmentGroup')",
+          "impact": "2",
+          "urgency": "2"
+        }
+      },
+      "runAfter": {
+        "Send_SOC_Email": [
+          "Succeeded"
+        ]
+      }
+    }
+  },
+  "outputs": {}
+}
